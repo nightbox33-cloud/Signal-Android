@@ -64,8 +64,17 @@ object ExternalNavigationHelper {
 
       val fallback = intent.getStringExtra("browser_fallback_url")
       if (fallback.isNotNullOrBlank()) {
+        // Per spec, browser_fallback_url is a web URL. Refuse to interpret
+        // anything else (including nested intent:// URIs) as a fallback.
+        val fallbackScheme = Uri.parse(fallback).scheme?.lowercase()
+        if (fallbackScheme != "http" && fallbackScheme != "https") {
+          Log.w(TAG, "Refusing non-web fallback URL scheme: $fallbackScheme")
+          toastOnActivityNotFound(context)
+          return
+        }
+
         try {
-          launchIntent(Intent.parseUri(fallback, Intent.URI_INTENT_SCHEME).sanitizeWebIntent())
+          launchIntent(Intent(Intent.ACTION_VIEW, Uri.parse(fallback)).addCategory(Intent.CATEGORY_BROWSABLE))
         } catch (e: ActivityNotFoundException) {
           Log.w(TAG, "Failed to launch fallback URL.", e)
           toastOnActivityNotFound(context)

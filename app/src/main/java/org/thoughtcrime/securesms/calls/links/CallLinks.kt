@@ -91,7 +91,7 @@ object CallLinks {
         // Make sure we don't have an empty key (i.e. handle the case
         // of "a=0&&b=0", for example)
         if (kv[0].isEmpty()) {
-          Log.w(TAG, "Invalid url: $url (empty key)")
+          Log.w(TAG, "Invalid url (empty key)")
           return null
         }
         val key = URLDecoder.decode(kv[0], "utf8")
@@ -101,17 +101,17 @@ object CallLinks {
           else -> {
             // Cannot have more than one value per key (i.e. handle the case
             // of "a=0&b=0=1=2", for example.
-            Log.w(TAG, "Invalid url: $url (multiple values)")
+            Log.w(TAG, "Invalid url (multiple values)")
             return null
           }
         }
         fragmentQuery += key to value
       }
     } catch (_: UnsupportedEncodingException) {
-      Log.w(TAG, "Invalid url: $url")
+      Log.w(TAG, "Invalid url (unsupported encoding)")
       return null
     } catch (_: IllegalArgumentException) {
-      Log.w(TAG, "Invalid url: $url")
+      Log.w(TAG, "Invalid url (malformed percent-encoding)")
       return null
     }
 

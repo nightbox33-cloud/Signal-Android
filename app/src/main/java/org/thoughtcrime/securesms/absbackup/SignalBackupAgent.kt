@@ -3,11 +3,13 @@ package org.thoughtcrime.securesms.absbackup
 import android.app.backup.BackupAgent
 import android.app.backup.BackupDataInput
 import android.app.backup.BackupDataOutput
+import android.app.backup.FullBackupDataOutput
 import android.os.ParcelFileDescriptor
 import org.signal.core.util.logging.Log
 import org.thoughtcrime.securesms.absbackup.backupables.SvrAuthTokens
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
@@ -58,6 +60,22 @@ class SignalBackupAgent : BackupAgent() {
     }
     DataOutputStream(FileOutputStream(newState.fileDescriptor)).use { it.writeInt(cumulativeHashCode()) }
     Log.i(TAG, "Android Backup Service restore complete.")
+  }
+
+  /**
+   * Signal only participates in key-value backup (see [items]). The default
+   * [BackupAgent.onFullBackup] implementation backs up the app's entire data
+   * directory, so we explicitly refuse to emit any file-based backup data.
+   */
+  override fun onFullBackup(data: FullBackupDataOutput) {
+    Log.w(TAG, "Refusing full (file-based) backup: only key-value backup is supported.")
+  }
+
+  /**
+   * Counterpart to [onFullBackup]: never restore files from a full backup set.
+   */
+  override fun onRestoreFile(data: ParcelFileDescriptor, size: Long, destination: File, type: Int, mode: Long, mtime: Long) {
+    Log.w(TAG, "Refusing full (file-based) restore: only key-value restore is supported.")
   }
 
   private fun cumulativeHashCode(): Int {

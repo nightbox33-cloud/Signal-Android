@@ -23,14 +23,13 @@ import org.signal.core.util.logging.Log;
 import org.signal.libsignal.protocol.InvalidMessageException;
 import org.signal.libsignal.protocol.ecc.ECPrivateKey;
 import org.signal.core.util.Base64;
-import org.signal.core.util.Hex;
 
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.Arrays;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
@@ -124,23 +123,6 @@ public class MasterCipher {
 		
   }
 	
-  public boolean verifyMacFor(String content, byte[] theirMac) {
-    byte[] ourMac = getMacFor(content);
-    Log.i(TAG, "Our Mac: " + Hex.toString(ourMac));
-    Log.i(TAG, "Thr Mac: " + Hex.toString(theirMac));
-    return Arrays.equals(ourMac, theirMac);
-  }
-	
-  public byte[] getMacFor(String content) {
-    Log.w(TAG, "Macing: " + content);
-    try {
-      Mac mac = getMac(masterSecret.getMacKey());
-      return mac.doFinal(content.getBytes());
-    } catch (GeneralSecurityException ike) {
-      throw new AssertionError(ike);
-    }
-  }
-
   private byte[] decodeAndDecryptBytes(String body) throws InvalidMessageException {
     try {
       byte[] decodedBody = Base64.decode(body);
@@ -168,7 +150,7 @@ public class MasterCipher {
 		
     byte[] localMac  = hmac.doFinal(encrypted);
 		
-    if (!Arrays.equals(remoteMac, localMac))
+    if (!MessageDigest.isEqual(remoteMac, localMac))
       throw new InvalidMessageException("MAC doesen't match.");
 		
     return encrypted;

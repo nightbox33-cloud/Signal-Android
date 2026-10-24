@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Signal only participates in Android Backup through its key-value BackupAgent
+  (SignalBackupAgent, which backs up nothing but non-secret SVR auth tokens).
+  These rules only govern file-based backup/transfer; they ensure that no file
+  from the app's data directory is ever included in a cloud (Auto) backup or a
+  device-to-device transfer. The key-value agent above is unaffected.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </device-transfer>
+</data-extraction-rules>

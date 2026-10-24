@@ -804,7 +804,17 @@ class ConversationViewModel(
     val recipient = recipientSnapshot ?: return
     val chatName = if (recipient.isSelf) context.getString(R.string.note_to_self) else recipient.getDisplayName(context)
 
-    val exportDir = File(context.externalCacheDir, "chat_exports")
+    // Exports contain decrypted chat content, so they must stay inside the app sandbox
+    // rather than external storage. Also purge any legacy exports left in external cache
+    // by older versions.
+    context.externalCacheDir
+      ?.let { File(it, "chat_exports") }
+      ?.let { legacyDir ->
+        legacyDir.listFiles()?.forEach { it.delete() }
+        legacyDir.delete()
+      }
+
+    val exportDir = File(context.cacheDir, "chat_exports")
     exportDir.mkdirs()
     exportDir.listFiles()?.forEach { it.delete() }
 

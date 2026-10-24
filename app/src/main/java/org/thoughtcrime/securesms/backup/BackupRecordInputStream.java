@@ -28,8 +28,14 @@ import javax.crypto.spec.SecretKeySpec;
 
 class BackupRecordInputStream extends FullBackupBase.BackupStream {
 
-  private final String TAG             = Log.tag(BackupRecordInputStream.class);
-  private final int    MAX_BUFFER_SIZE = 8192;
+  private final String TAG = Log.tag(BackupRecordInputStream.class);
+
+  // Frame lengths are read from the (not yet authenticated) stream, so they
+  // must be sanity-checked before being used as an allocation size. Legitimate
+  // frames contain a single statement/preference/key-value entry and are far
+  // smaller than this; bulk attachment data is streamed separately.
+  private static final int MAX_FRAME_LENGTH = 64 * 1024 * 1024;
+  private static final int MAC_LENGTH       = 10;
 
   private final int         version;
   private final InputStream in;
@@ -49,6 +55,9 @@ class BackupRecordInputStream extends FullBackupBase.BackupStream {
       StreamUtil.readFully(in, headerLengthBytes);
 
       int    headerLength = Conversions.byteArrayToInt(headerLengthBytes);
+      if (headerLength <= 0 || headerLength > MAX_FRAME_LENGTH) {
+        throw new IOException("Invalid header length: " + headerLength);
+      }
       byte[] headerFrame  = new byte[headerLength];
       StreamUtil.readFully(in, headerFrame);
 
@@ -98,29 +107,23 @@ class BackupRecordInputStream extends FullBackupBase.BackupStream {
 
   boolean validateFrame() throws InvalidAlgorithmParameterException, IOException, InvalidKeyException {
     int frameLength = decryptFrameLength(in);
-    if (frameLength <= 0) {
-      Log.i(TAG, "Backup frame is not valid due to negative frame length. This is likely because the decryption passphrase was wrong.");
+    if (frameLength <= MAC_LENGTH || frameLength > MAX_FRAME_LENGTH) {
+      Log.i(TAG, "Backup frame is not valid due to an implausible frame length. This is likely because the decryption passphrase was wrong.");
       return false;
     }
 
-    int    bufferSize = Math.min(MAX_BUFFER_SIZE, frameLength);
-    byte[] buffer     = new byte[bufferSize];
-    byte[] theirMac   = new byte[10];
-    while (frameLength > 0) {
-      int read = in.read(buffer, 0, Math.min(buffer.length, frameLength));
-      if (read == -1) return false;
-
-      if (read < MAX_BUFFER_SIZE) {
-        final int frameEndIndex = read - 10;
-        mac.update(buffer, 0, frameEndIndex);
-        System.arraycopy(buffer, frameEndIndex, theirMac, 0, theirMac.length);
-      } else {
-        mac.update(buffer, 0, read);
-      }
-      frameLength -= read;
+    byte[] frame = new byte[frameLength];
+    try {
+      StreamUtil.readFully(in, frame);
+    } catch (IOException e) {
+      return false;
     }
-    
-    byte[] ourMac = ByteUtil.trim(mac.doFinal(), 10);
+
+    byte[] theirMac = new byte[MAC_LENGTH];
+    System.arraycopy(frame, frame.length - MAC_LENGTH, theirMac, 0, theirMac.length);
+
+    mac.update(frame, 0, frame.length - MAC_LENGTH);
+    byte[] ourMac = ByteUtil.trim(mac.doFinal(), MAC_LENGTH);
 
     return MessageDigest.isEqual(ourMac, theirMac);
   }
@@ -177,20 +180,24 @@ class BackupRecordInputStream extends FullBackupBase.BackupStream {
     try {
       int frameLength = decryptFrameLength(in);
 
+      if (frameLength <= MAC_LENGTH || frameLength > MAX_FRAME_LENGTH) {
+        throw new IOException("Invalid frame length: " + frameLength);
+      }
+
       byte[] frame = new byte[frameLength];
       StreamUtil.readFully(in, frame);
 
-      byte[] theirMac = new byte[10];
-      System.arraycopy(frame, frame.length - 10, theirMac, 0, theirMac.length);
+      byte[] theirMac = new byte[MAC_LENGTH];
+      System.arraycopy(frame, frame.length - MAC_LENGTH, theirMac, 0, theirMac.length);
 
-      mac.update(frame, 0, frame.length - 10);
-      byte[] ourMac = ByteUtil.trim(mac.doFinal(), 10);
+      mac.update(frame, 0, frame.length - MAC_LENGTH);
+      byte[] ourMac = ByteUtil.trim(mac.doFinal(), MAC_LENGTH);
 
       if (!MessageDigest.isEqual(ourMac, theirMac)) {
         throw new IOException("Bad MAC");
       }
 
-      byte[] plaintext = cipher.doFinal(frame, 0, frame.length - 10);
+      byte[] plaintext = cipher.doFinal(frame, 0, frame.length - MAC_LENGTH);
 
       return BackupFrame.ADAPTER.decode(plaintext);
     } catch (InvalidKeyException | InvalidAlgorithmParameterException | IllegalBlockSizeException | BadPaddingException e) {
