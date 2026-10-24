@@ -5,20 +5,24 @@
 
 ## Resumen ejecutivo
 
-> **No se ha encontrado ninguna vulnerabilidad crítica o alta explotable en el código del repositorio.**
-> Signal es una de las aplicaciones móviles más auditadas del mundo y el código lo refleja: cripto
-> correcta, IPC cerrado, red con pinning, SQL parametrizada. Decirlo con precisión es importante:
-> «0 riesgos» absolutos no existen en ningún software (el protocolo, libsignal en Rust, RingRTC/WebRTC,
-> SQLCipher y el SO quedan fuera de este repo y tienen su propia superficie). Lo que sí puedo afirmar
-> tras esta auditoría es que **en el código de este repositorio no hay bugs críticos reales conocidos
-> tras el escaneo descrito abajo**. Se encontraron 2 problemas medios de endurecimiento (hardening) y
-> 4 bajos, **todos corregidos en esta rama**, más 1 dependencia obsoleta que requiere actualización
-> con build (documentada, no aplicada a ciegas porque rompería la verificación de dependencias).
+> **Actualización (2026-10-24, segunda pasada):** un reporte externo aportado tras la primera
+> auditoría señalaba un **crash remoto zero-click vía `DataMessage.Payment.Notification`** (F0 abajo).
+> La traza fue verificada eslabón a eslabón contra este código y **es real (severidad Alta)**; ya está
+> corregida en esta rama. Mi primera pasada —basada en Semgrep + greps por patrones— no lo detectó
+> porque es un bug de *guarda de estado ausente a través de una cadena asíncrona de jobs*, invisible
+> para reglas sintácticas. Queda constancia honesta de ello: «0 riesgos» absolutos no existen en
+> ningún software (y libsignal en Rust, RingRTC/WebRTC, SQLCipher y el SO quedan fuera de este repo).
+>
+> **Resumen:** no se encontraron vulnerabilidades de confidencialidad/integridad (sin robo de datos,
+> sin RCE, sin bypass de E2EE). Se encontraron **1 Alta (F0, DoS remoto), 2 Medias y 4 Bajas, todas
+> corregidas en esta rama**, más 1 dependencia obsoleta que requiere actualización con build
+> (documentada, no aplicada a ciegas porque rompería la verificación de dependencias).
 
 ### Hallazgos y estado
 
 | # | Severidad | Hallazgo | Estado |
 |---|-----------|----------|--------|
+| F0 | **Alta** | **Crash remoto zero-click no autenticado** vía `DataMessage.Payment.Notification`: sin guarda de «pagos activados», una notificación de pago MobileCoin encola `PaymentTransactionCheckJob`, que llama a `Payments.getWallet()` → NPE por entropía nula → `Result.fatalFailure` → `JobRunner` relanza y mata el proceso. Afecta a todo usuario que nunca activó pagos | ✅ Corregido |
 | F1 | **Media** | Backup Android: sin `dataExtractionRules` y `onFullBackup()` por defecto copiaría todo el directorio de datos si un transporte full/D2D lo invocara | ✅ Corregido |
 | F2 | **Media** | Exportación de chat en texto plano (mensajes descifrados) persistía indefinidamente en caché **externo** | ✅ Corregido |
 | F3 | Baja | `BackupRecordInputStream`: longitudes no autenticadas usadas como tamaño de asignación (OOM/crash al restaurar backup corrupto o con contraseña errónea); `validateFrame` asumía lecturas completas | ✅ Corregido |
@@ -63,6 +67,45 @@ parsear cada fichero editado con Semgrep y revisando el diff completo.
 ---
 
 ## 1. Hallazgos corregidos
+
+### F0 (Alta) — Crash remoto zero-click vía `DataMessage.Payment.Notification`
+**Dónde:** `messages/DataMessageProcessor.kt:657-717` (`handlePayment`),
+`jobs/PaymentTransactionCheckJob.java:55-92`, `payments/Payments.java:33-40` (`getWallet()`),
+`jobs/BaseJob.java:33-35`, `jobmanager/JobRunner.java:71-78`.
+
+**Traza verificada en este código** (reporte externo, confirmado punto por punto):
+1. `EnvelopeContentValidator.validateDataMessage` no inspecciona `dataMessage.payment` (solo valida
+   `syncMessage.outgoingPayment`), y `MessageContentProcessor.shouldIgnoreDataMessage` solo descarta
+   remitentes bloqueados → un `DataMessage` con `Payment.Notification` de **cualquier** remitente
+   (incluido desconocido/sin aceptar la solicitud de mensaje, vía push en segundo plano) llega a
+   `handlePayment`.
+2. `handlePayment` solo comprobaba que hubiera receipt: insertaba la fila
+   (`PaymentTable.createIncomingPayment` → `PaymentMetaDataUtil.fromReceipt`, que solo exige un
+   `Receipt` MobileCoin sintácticamente válido — fabricable sin fondos reales) y encolaba en el
+   `finally` la cadena `PaymentTransactionCheckJob → PaymentLedgerUpdateJob`, **sin comprobar
+   `SignalStore.payments.mobileCoinPaymentsEnabled()`**.
+3. `PaymentTransactionCheckJob.onRun` (a diferencia de `PaymentLedgerUpdateJob.java:60`, que sí tiene
+   la guarda) llamaba directamente a `payments.getWallet()`, que hace
+   `Objects.requireNonNull(SignalStore.payments().getPaymentsEntropy())`. La entropía es `null` en
+   cualquier cuenta que nunca activó pagos MobileCoin → `NullPointerException`.
+4. `BaseJob.run()` convierte el `RuntimeException` en `Result.fatalFailure(e)`;
+   `JobRunner` (línea 77) hace `throw result.getException()` sin try/catch en su hilo;
+   `SignalUncaughtExceptionHandler` lo delega al handler del sistema → **muerte del proceso**.
+
+Matices de impacto (por precisión): el job se marca fallido y se elimina **antes** del relanzamiento
+(`jobController.onFailure`, línea 72), así que no hay bucle infinito de crash al reabrir — cada mensaje
+malicioso = una muerte de proceso; la DoS sostenida exige reenviar (trivial para el atacante). Es un
+impacto de **disponibilidad**, sin compromiso de confidencialidad/integridad: Alta, no Crítica.
+`handlePaymentActivation` no necesita guarda (no toca wallet ni encola jobs; solo inserta un mensaje
+de sistema, comportamiento legítimo).
+
+**Corrección aplicada (defensa en profundidad, mismo patrón que `PaymentLedgerUpdateJob`):**
+- `DataMessageProcessor.handlePayment`: si `!SignalStore.payments.mobileCoinPaymentsEnabled()`, se
+  ignora el mensaje sin insertar ni encolar nada (un cliente legítimo jamás genera esta notificación
+  hacia quien no tiene pagos: necesita su dirección de pago, que solo existe si los activó).
+- `PaymentTransactionCheckJob.onRun`: guarda inicial
+  `if (!mobileCoinPaymentsEnabled() || getPaymentsEntropy() == null) return;` — protege también las
+  demás vías que encolan este job (`RecheckPaymentsMigrationJob`, y filas ya persistidas por el bug).
 
 ### F1 (Media) — Canal de extracción por backup completo / D2D no cerrado explícitamente
 **Dónde:** `app/src/main/AndroidManifest.xml:77` (`allowBackup="true"`, `fullBackupOnly="false"`),
@@ -266,6 +309,8 @@ artefacto en `gradle/verification-metadata.xml`, así que cambiar la versión si
 ## 5. Cambios incluidos en esta rama
 
 ```
+.../messages/DataMessageProcessor.kt                (F0: ignorar pagos si no están activados)
+.../jobs/PaymentTransactionCheckJob.java            (F0: guarda enabled/entropía en onRun)
 app/src/main/AndroidManifest.xml                    (+dataExtractionRules, +fullBackupContent)
 app/src/main/res/xml/data_extraction_rules.xml      (nuevo)
 app/src/main/res/xml/backup_rules.xml               (nuevo)

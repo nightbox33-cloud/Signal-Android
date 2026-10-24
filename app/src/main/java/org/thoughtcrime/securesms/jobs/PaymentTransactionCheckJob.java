@@ -11,6 +11,7 @@ import org.thoughtcrime.securesms.jobmanager.JsonJobData;
 import org.thoughtcrime.securesms.jobmanager.Job;
 import org.thoughtcrime.securesms.jobmanager.impl.BackoffUtil;
 import org.thoughtcrime.securesms.jobmanager.impl.NetworkConstraint;
+import org.thoughtcrime.securesms.keyvalue.SignalStore;
 import org.thoughtcrime.securesms.payments.FailureReason;
 import org.thoughtcrime.securesms.payments.PaymentTransactionId;
 import org.thoughtcrime.securesms.payments.Payments;
@@ -53,6 +54,11 @@ public final class PaymentTransactionCheckJob extends BaseJob {
 
   @Override
   protected void onRun() throws Exception {
+    if (!SignalStore.payments().mobileCoinPaymentsEnabled() || SignalStore.payments().getPaymentsEntropy() == null) {
+      Log.w(TAG, "Payments are not enabled");
+      return;
+    }
+
     PaymentTable paymentDatabase = SignalDatabase.payments();
 
     PaymentTable.PaymentTransaction payment = paymentDatabase.getPayment(uuid);

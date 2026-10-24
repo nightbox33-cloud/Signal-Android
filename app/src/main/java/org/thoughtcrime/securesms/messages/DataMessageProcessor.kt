@@ -669,6 +669,11 @@ object DataMessageProcessor {
       return null
     }
 
+    if (!SignalStore.payments.mobileCoinPaymentsEnabled()) {
+      warn(envelope.clientTimestamp!!, "Ignoring payment message because payments are not enabled")
+      return null
+    }
+
     val paymentNotification = message.payment!!.notification!!
     val uuid = UUID.randomUUID()
     val queue = "Payment_" + PushProcessMessageJob.getQueueName(senderRecipientId)
